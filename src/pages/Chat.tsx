@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { Layout } from '@/components/layout/Layout';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { ChatSidebar } from '@/components/chat/ChatSidebar';
-import { useMediaQuery } from '@/hooks/use-mobile';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { Button } from '@/components/ui/button';
 import { Menu } from 'lucide-react';
 
