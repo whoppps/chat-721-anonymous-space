@@ -7,28 +7,20 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { ChatMessage, saveMessage, getAllMessages, clearAllMessages, getNewerMessages } from '@/utils/chatStorage';
 
-interface Message {
-  id: string;
-  content: string;
-  sender: string;
-  timestamp: Date;
-  nickname: string;
-}
-
-const STORAGE_KEY = 'shared_chat_messages';
 const POLLING_INTERVAL = 1000; // Poll every second for new messages
 
 export const ChatInterface = () => {
   const { toast } = useToast();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(true);
   const [nickname, setNickname] = useState('');
   const [nicknameDialogOpen, setNicknameDialogOpen] = useState(false);
   const [tempNickname, setTempNickname] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastMessageTimestampRef = useRef<number>(0);
+  const lastPollTimeRef = useRef<Date>(new Date());
   
   // Generate a unique user color based on nickname
   const getUserColor = (name: string) => {
@@ -40,28 +32,31 @@ export const ChatInterface = () => {
     return colors[Math.abs(hash) % colors.length];
   };
   
-  // Load messages from localStorage and check for new ones
-  const loadMessages = () => {
-    const savedMessages = localStorage.getItem(STORAGE_KEY);
-    if (savedMessages) {
-      try {
-        const parsedMessages = JSON.parse(savedMessages).map((msg: any) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp)
-        }));
-        
-        // Check if there are new messages
-        if (parsedMessages.length > messages.length) {
-          setMessages(parsedMessages);
-          // Update the last message timestamp
-          if (parsedMessages.length > 0) {
-            const newest = new Date(parsedMessages[parsedMessages.length - 1].timestamp).getTime();
-            lastMessageTimestampRef.current = newest;
-          }
-        }
-      } catch (error) {
-        console.error('Error parsing saved messages:', error);
+  // Load all messages initially, then poll for new ones
+  const loadMessages = async () => {
+    try {
+      const currentTime = new Date();
+      const newMessages = await getNewerMessages(lastPollTimeRef.current);
+      
+      if (newMessages.length > 0) {
+        setMessages(prevMessages => {
+          // Combine existing messages with new ones and sort
+          const allMessages = [...prevMessages, ...newMessages];
+          // Remove duplicates based on message id
+          const uniqueMessages = Array.from(
+            new Map(allMessages.map(msg => [msg.id, msg])).values()
+          );
+          // Sort by timestamp
+          return uniqueMessages.sort(
+            (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+          );
+        });
       }
+      
+      lastPollTimeRef.current = currentTime;
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      setIsConnected(false);
     }
   };
   
@@ -77,8 +72,20 @@ export const ChatInterface = () => {
     }
     
     // Initial message load
-    loadMessages();
-    setIsConnected(true);
+    const initialLoad = async () => {
+      try {
+        const allMessages = await getAllMessages();
+        setMessages(allMessages.sort(
+          (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+        ));
+        setIsConnected(true);
+      } catch (error) {
+        console.error('Error during initial message load:', error);
+        setIsConnected(false);
+      }
+    };
+    
+    initialLoad();
     
     // Set up polling for new messages
     const interval = setInterval(() => {
@@ -88,55 +95,44 @@ export const ChatInterface = () => {
     return () => clearInterval(interval);
   }, []);
   
-  // Save messages to localStorage whenever local messages change
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
   
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (inputValue.trim() === '') return;
     if (!nickname) {
       setNicknameDialogOpen(true);
       return;
     }
     
-    // Add user message
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      content: inputValue,
-      sender: 'user',
-      timestamp: new Date(),
-      nickname: nickname
-    };
-    
-    // Get current messages from localStorage to ensure we're not overwriting
-    const savedMessages = localStorage.getItem(STORAGE_KEY);
-    let currentMessages: Message[] = [];
-    
-    if (savedMessages) {
-      try {
-        currentMessages = JSON.parse(savedMessages).map((msg: any) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp)
-        }));
-      } catch (error) {
-        console.error('Error parsing saved messages:', error);
-      }
+    try {
+      // Add user message
+      const newMessage: ChatMessage = {
+        id: Date.now().toString(),
+        content: inputValue,
+        sender: 'user',
+        timestamp: new Date(),
+        nickname: nickname
+      };
+      
+      // Save to IndexedDB
+      await saveMessage(newMessage);
+      
+      // Optimistically add to UI
+      setMessages(prevMessages => [...prevMessages, newMessage]);
+      
+      // Clear input
+      setInputValue('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+      toast({
+        title: "发送失败",
+        description: "无法发送消息，请重试",
+        variant: "destructive"
+      });
     }
-    
-    // Add new message and sort by timestamp
-    const updatedMessages = [...currentMessages, newMessage].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    );
-    
-    // Update localStorage
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedMessages));
-    
-    // Update state
-    setMessages(updatedMessages);
-    
-    // Clear input
-    setInputValue('');
   };
   
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -159,10 +155,10 @@ export const ChatInterface = () => {
     }
   };
   
-  const handleClearChat = () => {
+  const handleClearChat = async () => {
     if (confirm('确定要清空所有聊天记录吗？')) {
+      await clearAllMessages();
       setMessages([]);
-      localStorage.removeItem(STORAGE_KEY);
       toast({
         title: "聊天记录已清空",
         description: "所有聊天记录已被删除。",
@@ -179,6 +175,12 @@ export const ChatInterface = () => {
       <div className="w-full h-[calc(100vh-200px)] flex flex-col items-center justify-center">
         <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin mb-4"></div>
         <p className="text-muted-foreground">正在连接到聊天服务器...</p>
+        <Button 
+          onClick={() => setIsConnected(true)} 
+          className="mt-4"
+        >
+          重试连接
+        </Button>
       </div>
     );
   }
@@ -241,7 +243,7 @@ export const ChatInterface = () => {
                   <p className="whitespace-pre-wrap">{message.content}</p>
                 </div>
                 <span className="text-xs text-muted-foreground mt-1">
-                  {formatTime(new Date(message.timestamp))}
+                  {formatTime(message.timestamp)}
                 </span>
               </div>
               
