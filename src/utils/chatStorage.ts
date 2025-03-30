@@ -14,6 +14,7 @@ export interface ChatMessage {
   nickname: string;
 }
 
+// Use a more global-sounding database name to reinforce the shared nature
 const DB_NAME = 'shared_chat_db';
 const STORE_NAME = 'chat_messages';
 const DB_VERSION = 1;
